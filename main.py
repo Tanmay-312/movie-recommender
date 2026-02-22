@@ -2,8 +2,7 @@ import os
 import pickle
 from typing import Optional, List, Dict, Any, Tuple
 
-import numpy as np
-import pandas as pd
+
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,58 +34,40 @@ from contextlib import asynccontextmanager
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DF_PATH = os.path.join(BASE_DIR, "df.pkl")
-INDICES_PATH = os.path.join(BASE_DIR, "indices.pkl")
-TFIDF_MATRIX_PATH = os.path.join(BASE_DIR, "tfidf_matrix.pkl")
-TFIDF_PATH = os.path.join(BASE_DIR, "tfidf.pkl")
+TFIDF_LITE_PATH = os.path.join(BASE_DIR, "tfidf_lite.json")
 
-df: Optional[pd.DataFrame] = None
-indices_obj: Any = None
-tfidf_matrix: Any = None
-tfidf_obj: Any = None
+# Pure Python Data Structure
+# List of dicts: {"title": str, "norm": float, "features": [(vocab_idx, weight), ...]}
+tfidf_lite_data: List[Dict[str, Any]] = []
 
 TITLE_TO_IDX: Optional[Dict[str, int]] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global df, indices_obj, tfidf_matrix, tfidf_obj, TITLE_TO_IDX
+    global tfidf_lite_data, TITLE_TO_IDX
 
+    import json
     try:
-        # Load df
-        with open(DF_PATH, "rb") as f:
-            df = pickle.load(f)
+        if not os.path.exists(TFIDF_LITE_PATH):
+            print("WARNING: tfidf_lite.json not found! Recommendation engine disabled.")
+        else:
+            print("Loading TF-IDF JSON Database...")
+            with open(TFIDF_LITE_PATH, "r") as f:
+                tfidf_lite_data = json.load(f)
 
-        # Load indices
-        with open(INDICES_PATH, "rb") as f:
-            indices_obj = pickle.load(f)
+            # Build map dynamically from the JSON
+            TITLE_TO_IDX = {}
+            for i, record in enumerate(tfidf_lite_data):
+                TITLE_TO_IDX[str(record["title"]).strip().lower()] = i
 
-        # Load TF-IDF matrix (usually scipy sparse)
-        with open(TFIDF_MATRIX_PATH, "rb") as f:
-            tfidf_matrix = pickle.load(f)
-
-        # Load tfidf vectorizer (optional, not used directly here)
-        with open(TFIDF_PATH, "rb") as f:
-            tfidf_obj = pickle.load(f)
-
-        # Build normalized map
-        TITLE_TO_IDX = build_title_to_idx_map(indices_obj)
-
-        # sanity
-        if df is None or "title" not in df.columns:
-            raise RuntimeError("df.pkl must contain a DataFrame with a 'title' column")
     except Exception as e:
-        print(f"Error loading pickle files during startup: {e}")
-        # Allow failing gracefully instead of crashing uvicorn hard if desired,
-        # but usually it's better to raise so the developer knows immediately.
+        print(f"Error loading TF-IDF JSON during startup: {e}")
         raise e
 
     yield
 
     # Clean up (optional)
-    df = None
-    indices_obj = None
-    tfidf_matrix = None
-    tfidf_obj = None
+    tfidf_lite_data = []
     TITLE_TO_IDX = None
 
 # =========================
@@ -231,33 +212,8 @@ async def tmdb_search_first(query: str) -> Optional[dict]:
 
 
 # =========================
-# TF-IDF Helpers
+# Pure Python TF-IDF Helpers
 # =========================
-def build_title_to_idx_map(indices: Any) -> Dict[str, int]:
-    """
-    indices.pkl can be:
-    - dict(title -> index)
-    - pandas Series (index=title, value=index)
-    We normalize into TITLE_TO_IDX.
-    """
-    title_to_idx: Dict[str, int] = {}
-
-    if isinstance(indices, dict):
-        for k, v in indices.items():
-            title_to_idx[_norm_title(k)] = int(v)
-        return title_to_idx
-
-    # pandas Series or similar mapping
-    try:
-        for k, v in indices.items():
-            title_to_idx[_norm_title(k)] = int(v)
-        return title_to_idx
-    except Exception:
-        # last resort: if it's a list-like etc.
-        raise RuntimeError(
-            "indices.pkl must be dict or pandas Series-like (with .items())"
-        )
-
 
 def get_local_idx_by_title(title: str) -> int:
     global TITLE_TO_IDX
@@ -270,39 +226,48 @@ def get_local_idx_by_title(title: str) -> int:
         status_code=404, detail=f"Title not found in local dataset: '{title}'"
     )
 
-
 def tfidf_recommend_titles(
     query_title: str, top_n: int = 10
 ) -> List[Tuple[str, float]]:
     """
-    Returns list of (title, score) from local df using cosine similarity on TF-IDF matrix.
-    Safe against missing columns/rows.
+    Returns list of (title, score) using pure Python cosine similarity 
+    on the pre-compressed TF-IDF sparse dictionary map.
     """
-    global df, tfidf_matrix
-    if df is None or tfidf_matrix is None:
-        raise HTTPException(status_code=500, detail="TF-IDF resources not loaded")
+    global tfidf_lite_data
+    if not tfidf_lite_data:
+        raise HTTPException(status_code=500, detail="TF-IDF JSON data not loaded")
 
     idx = get_local_idx_by_title(query_title)
+    query_record = tfidf_lite_data[idx]
+    
+    # query features: convert list of [vocab_idx, weight] to a dict for fast lookup
+    query_dict = {f[0]: f[1] for f in query_record["features"]}
+    q_norm = query_record["norm"]
 
-    # query vector
-    qv = tfidf_matrix[idx]
-    scores = (tfidf_matrix @ qv.T).toarray().ravel()
-
-    # sort descending
-    order = np.argsort(-scores)
-
-    out: List[Tuple[str, float]] = []
-    for i in order:
-        if int(i) == int(idx):
+    scores = []
+    
+    # Pure python dot product vs all movies
+    for i, candidate in enumerate(tfidf_lite_data):
+        if i == idx:
             continue
-        try:
-            title_i = str(df.iloc[int(i)]["title"])
-        except Exception:
-            continue
-        out.append((title_i, float(scores[int(i)])))
-        if len(out) >= top_n:
-            break
-    return out
+            
+        dot_product = 0.0
+        # Iterate over the sparse features of the candidate, looking up in query dict
+        for vocab_idx, weight in candidate["features"]:
+            if vocab_idx in query_dict:
+                dot_product += query_dict[vocab_idx] * weight
+                
+        # Cosine sim = dot_product / (norm(q) * norm(c))
+        c_norm = candidate["norm"]
+        # To avoid division by zero (handled by making norm at least 1.0 in extract array script)
+        similarity = dot_product / (q_norm * c_norm)
+        
+        scores.append((candidate["title"], float(similarity)))
+
+    # Sort descending by score
+    scores.sort(key=lambda x: x[1], reverse=True)
+    
+    return scores[:top_n]
 
 
 async def attach_tmdb_card_by_title(title: str) -> Optional[TMDBMovieCard]:
