@@ -1,24 +1,114 @@
+import os
 import requests
 import streamlit as st
 
 # =============================
 # CONFIG
 # =============================
-API_BASE = "https://movie-rec-466x.onrender.com" or "http://127.0.0.1:8000"
+# Fix the hardcoded fallback which always evaluates to the left side
+API_BASE = os.getenv("API_URL", "http://127.0.0.1:8000")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
 st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
 
 # =============================
-# STYLES (minimal modern)
+# STYLES (Premium Glassmorphism & Theme Support)
 # =============================
+
+if "theme" not in st.session_state:
+    st.session_state.theme = "Dark"
+
+is_dark = st.session_state.theme == "Dark"
+bg_gradient = "linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)" if is_dark else "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)"
+card_bg = "rgba(15, 23, 42, 0.4)" if is_dark else "rgba(255, 255, 255, 0.6)"
+text_color = "#f8fafc" if is_dark else "#0f172a"
+muted_color = "#94a3b8" if is_dark else "#64748b"
+border_color = "rgba(255, 255, 255, 0.1)" if is_dark else "rgba(0, 0, 0, 0.05)"
+hover_bg = "rgba(255, 255, 255, 0.05)" if is_dark else "rgba(0, 0, 0, 0.03)"
+
 st.markdown(
-    """
+    f"""
 <style>
-.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }
-.small-muted { color:#6b7280; font-size: 0.92rem; }
-.movie-title { font-size: 0.9rem; line-height: 1.15rem; height: 2.3rem; overflow: hidden; }
-.card { border: 1px solid rgba(0,0,0,0.08); border-radius: 16px; padding: 14px; background: rgba(255,255,255,0.7); }
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+
+/* Apply global font and dynamic background */
+.stApp {{
+    background: {bg_gradient};
+    background-attachment: fixed;
+    color: {text_color};
+    font-family: 'Outfit', sans-serif !important;
+}}
+
+/* Typography fixes */
+h1, h2, h3, h4, h5, h6, .markdown-text-container, p, span, div {{
+    font-family: 'Outfit', sans-serif !important;
+}}
+
+.block-container {{ padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1400px; }}
+.small-muted {{ color: {muted_color}; font-size: 0.95rem; font-weight: 300; }}
+
+/* Movie Title styling */
+.movie-title {{
+    font-size: 0.95rem;
+    line-height: 1.25rem;
+    height: 2.5rem;
+    overflow: hidden;
+    margin-top: 0.8rem;
+    font-weight: 600;
+    color: {text_color};
+    text-align: center;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}}
+
+/* Premium Glassmorphism Card */
+.card {{
+    border: 1px solid {border_color};
+    border-radius: 20px;
+    padding: 1.5rem;
+    background: {card_bg};
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}}
+.card:hover {{
+    transform: translateY(-4px);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}}
+
+/* Image hover effects */
+img {{
+    border-radius: 12px;
+    transition: transform 0.4s ease, filter 0.4s ease;
+}}
+img:hover {{
+    transform: scale(1.03);
+    filter: brightness(1.1);
+}}
+
+/* Clean up Streamlit internal elements to blend better */
+div[data-testid="stSidebar"] {{
+    background: {card_bg} !important;
+    backdrop-filter: blur(20px);
+    border-right: 1px solid {border_color};
+}}
+
+.stButton>button {{
+    border-radius: 12px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    border: 1px solid {border_color};
+    background: transparent;
+    color: {text_color};
+}}
+.stButton>button:hover {{
+    background: {hover_bg};
+    border-color: {muted_color};
+    color: {text_color};
+}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -95,7 +185,7 @@ def poster_grid(cards, cols=6, key_prefix="grid"):
 
             with colset[c]:
                 if poster:
-                    st.image(poster, use_column_width=True)
+                    st.image(poster, use_container_width=True)
                 else:
                     st.write("🖼️ No poster")
 
@@ -199,12 +289,21 @@ def parse_tmdb_search_to_cards(data, keyword: str, limit: int = 24):
 
 
 # =============================
-# SIDEBAR (clean)
+# SIDEBAR (clean & theme options)
 # =============================
 with st.sidebar:
     st.markdown("## 🎬 Menu")
-    if st.button("🏠 Home"):
+    if st.button("🏠 Home", use_container_width=True):
         goto_home()
+
+    st.markdown("---")
+    st.markdown("### 🎨 Appearance")
+    
+    # Theme toggler
+    theme_choice = st.radio("Theme", ["Dark", "Light"], index=0 if st.session_state.theme == "Dark" else 1)
+    if theme_choice != st.session_state.theme:
+        st.session_state.theme = theme_choice
+        st.rerun()
 
     st.markdown("---")
     st.markdown("### 🏠 Home Feed (only home)")
@@ -213,7 +312,7 @@ with st.sidebar:
         ["trending", "popular", "top_rated", "now_playing", "upcoming"],
         index=0,
     )
-    grid_cols = st.slider("Grid columns", 4, 8, 6)
+    grid_cols = st.slider("Grid columns", 4, 8, 5)
 
 # =============================
 # HEADER
@@ -309,7 +408,7 @@ elif st.session_state.view == "details":
     with left:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
         if data.get("poster_url"):
-            st.image(data["poster_url"], use_column_width=True)
+            st.image(data["poster_url"], use_container_width=True)
         else:
             st.write("🖼️ No poster")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -332,7 +431,7 @@ elif st.session_state.view == "details":
 
     if data.get("backdrop_url"):
         st.markdown("#### Backdrop")
-        st.image(data["backdrop_url"], use_column_width=True)
+        st.image(data["backdrop_url"], use_container_width=True)
 
     st.divider()
     st.markdown("### ✅ Recommendations")
